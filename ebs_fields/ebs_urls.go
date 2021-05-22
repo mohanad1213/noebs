@@ -47,7 +47,8 @@ const (
 )
 
 const (
-	EBSIp = "https://172.16.199.1:8877/QAConsumer/"
+	EBSIpConsumerTesting = "https://172.16.199.1:8877/QAConsumer/"
+	EBSIp                = "https://172.24.160.30:8443/Consumer/"
 )
 
 const (
@@ -64,4 +65,10 @@ const (
 	ConsumerQRPaymentEndpoint    = "doQRPurchase"
 	ConsumerQRGenerationEndpoint = "doMerchantRegistration"
 	ConsumerQRRefundEndpoint     = "doQRRefund"
+	ConsumerPANFromMobile        = "checkMsisdnAganistPAN"
+	ConsumerCardInfo             = "getCustomerInfo"
+
+	// IPIN generation
+	IPinGeneration = "doGenerateIPinRequest"
+	IPinCompletion = "doGenerateCompletionIPinRequest"
 )

@@ -7,8 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
 	"github.com/adonese/noebs/ebs_fields"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v7"
 
 	"crypto/x509"
 )

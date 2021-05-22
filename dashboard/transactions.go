@@ -6,7 +6,9 @@ import (
 	"github.com/gin-contrib/multitemplate"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
+	"strings"
 	"time"
+	"unicode"
 )
 
 type Transaction struct {
@@ -116,7 +118,7 @@ func structToSlice(t []Transaction) []string {
 }
 
 func TimeFormatter(t time.Time) string {
-	return t.Format("Mon Jan 2, 15:04:05 CAT 2006")
+	return t.Format(time.RFC3339)
 }
 
 func GenerateMultiTemplate() multitemplate.Renderer {
@@ -146,4 +148,57 @@ type merchantsIssues struct {
 
 func (m *merchantsIssues) MarshalBinary() ([]byte, error) {
 	return json.Marshal(m)
+}
+
+func sortTable(db *gorm.DB, searchField, search string, sortField, sortCase string, offset, pageSize int) ([]Transaction, int) {
+
+	var tran []Transaction
+	var count int
+
+	searchField = mapSearchField(searchField)
+	sortField = mapSearchField(sortField)
+	log.Printf("the search field and sort fields are: %s, %s", searchField, sortField)
+
+	if searchField != "" || search != ""{
+		// where can you search?
+		// terminal_id
+		// date time range TODO
+		// systemTraceAuditNumber
+		switch searchField{
+		case "created_at":
+			db.Table("transactions").Where("id >= ? AND created_at in (?)", offset, search).Count(&count).Limit(pageSize).Order(sortField + " " + sortCase).Find(&tran)
+		case "system_trace_audit_number": // exact match
+			db.Table("transactions").Where("id >= ? AND system_trace_audit_number = ?", offset, search).Count(&count).Limit(pageSize).Order(sortField +" "+ sortCase).Find(&tran)
+		default:
+			db.Table("transactions").Where("id >= ? AND terminal_id LIKE ?", offset, "%"+search+"%").Count(&count).Limit(pageSize).Order(sortField+" " + sortCase).Find(&tran)
+		}
+	}else{
+		// we only want to sort, no searching required
+		db.Table("transactions").Where("id >= ?", offset).Count(&count).Limit(pageSize).Order(sortField + " " + sortCase).Find(&tran)
+	}
+	return tran, count
+
+}
+
+func mapSearchField(f string) string{
+	/*
+	terminalId: terminal_id
+	tranDateTime: tran_date_time
+	approvalCode: approval_code
+	 */
+	var result = f
+	for i, v := range []rune(f){
+		if i == 0 {
+			continue
+		}
+		if unicode.IsUpper(v){
+			if !unicode.IsUpper(rune(f[i-1])){
+				result = result[:i] + "_" + strings.ToLower(string(v)) + f[i+1:]
+				break
+			}
+
+		}
+	}
+	return strings.ToLower(result)
+
 }

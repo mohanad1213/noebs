@@ -2,18 +2,20 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/adonese/noebs/consumer"
-	"github.com/adonese/noebs/ebs_fields"
-	"github.com/adonese/noebs/utils"
-	"github.com/google/uuid"
-	ginprometheus "github.com/zsais/go-gin-prometheus"
-	"gopkg.in/go-playground/validator.v9"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/adonese/noebs/consumer"
+	"github.com/adonese/noebs/ebs_fields"
+	"github.com/go-playground/validator/v10"
+	"github.com/go-redis/redis/v7"
+	"github.com/google/uuid"
+	ginprometheus "github.com/zsais/go-gin-prometheus"
 )
 
 type redisPurchaseFields map[string]interface{}
@@ -79,25 +81,6 @@ func generateDoc(e string) []map[string]interface{} {
 
 	return scheme
 }
-
-//func redisOrNew(key string, data []map[string]interface{}) (string, error){
-//	routes := getAllRoutes()
-//
-//	client := GetRedis()
-//
-//	v, err := client.HMGet("doc")
-//	if err == redis.Nil {
-//		for _, r := range routes {
-//			// get the particular fields for this route
-//			doc := generateDoc(r["path"])
-//			b, _ := json.Marshal(&r)
-//			client.HSet(routes["path"], b)
-//		}
-//
-//	}
-//	client.Close()
-//
-//}
 
 //getAllRoutes gets all routes for this particular engine
 // perhaps, it could better be rewritten to explicitly show that
@@ -208,38 +191,42 @@ func generateUUID() string {
 	return uuid.New().String()
 }
 
-func handleChan() {
+func handleChan(r *redis.Client) {
 	// when getting redis results, ALWAYS json.Marshal them
-	redisClient := utils.GetRedis()
 	for {
 		select {
 		case c := <-consumer.BillChan:
 			if c.PayeeID == necPayment {
 				var m necBill
-				mapFields := additionalFieldsToHash(c.AdditionalData)
-				m.NewFromMap(mapFields)
-				redisClient.HSet("meters", m.MeterNumber, m.CustomerName)
-			} else if c.PayeeID == mtnTopUp {
-				var m mtnBill
-				mapFields := additionalFieldsToHash(c.AdditionalData)
-				m.NewFromMap(mapFields)
-			} else if c.PayeeID == sudaniTopUp {
-				var m sudaniBill
-				mapFields := additionalFieldsToHash(c.AdditionalData)
-				m.NewFromMap(mapFields)
+				//FIXME there is a bug here
+				//mapFields, _ := additionalFieldsToHash(c.BillInfo)
+				m.NewFromMap(c.BillInfo)
+				r.HSet("meters", m.MeterNumber, m.CustomerName)
 			}
+			//} else if c.PayeeID == mtnTopUp {
+			//	var m mtnBill
+			//	mapFields, _ := additionalFieldsToHash(c.AdditionalData)
+			//	m.NewFromMap(mapFields)
+			//} else if c.PayeeID == sudaniTopUp {
+			//	var m sudaniBill
+			//	mapFields, _ := additionalFieldsToHash(c.AdditionalData)
+			//	m.NewFromMap(mapFields)
+			//}
 		}
 	}
 }
 
-func additionalFieldsToHash(a string) map[string]string {
+func additionalFieldsToHash(a string) (map[string]string, error) {
 	fields := strings.Split(a, ";")
+	if len(fields) < 2 {
+		return nil, errors.New("index out of range")
+	}
 	out := make(map[string]string)
 	for _, v := range fields {
 		f := strings.Split(v, "=")
 		out[f[0]] = f[1]
 	}
-	return out
+	return out, nil
 }
 
 type test struct {
@@ -299,12 +286,23 @@ func (n *necBill) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, n)
 }
 
-func (n *necBill) NewFromMap(f map[string]string) {
-	n.SalesAmount, _ = strconv.ParseFloat(f["SalesAmount"], 32)
-	n.CustomerName = f["CustomerName"]
-	n.FixedFee, _ = strconv.ParseFloat(f["FixedFee"], 32)
-	n.MeterNumber = f["MeterNumber"]
-	n.Token = f["Token"]
+func (n *necBill) NewFromMap(f map[string]interface{}) {
+	/*
+	   "accountNo": "AM042111907231",
+	   "customerName": "ALSAFIE BAKHIEYT HEMYDAN",
+	   "meterFees": "0",
+	   "meterNumber": "04203594959",
+	   "netAmount": "10",
+	   "opertorMessage": "Credit Purchase",
+	   "token": "07246305192693082213",
+	   "unitsInKWh": "66.7",
+	   "waterFees": "0.00"
+	*/
+	n.SalesAmount, _ = strconv.ParseFloat(f["netAmount"].(string), 32)
+	n.CustomerName = f["customerName"].(string)
+	n.FixedFee, _ = strconv.ParseFloat(f["meterFees"].(string), 32)
+	n.MeterNumber = f["meterNumber"].(string)
+	n.Token = f["token"].(string)
 }
 
 const (

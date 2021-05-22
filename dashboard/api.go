@@ -4,30 +4,54 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/adonese/noebs/ebs_fields"
-	"github.com/adonese/noebs/utils"
-	"github.com/gin-gonic/gin"
-	"github.com/jinzhu/gorm"
-	"github.com/sirupsen/logrus"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/adonese/noebs/ebs_fields"
+	"github.com/adonese/noebs/utils"
+	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v7"
+	"github.com/jinzhu/gorm"
+	"github.com/sirupsen/logrus"
 )
 
 var log = logrus.New()
 
-// TransactionCount godoc
-// @Summary Get all transactions made by a specific terminal ID
-// @Description get accounts
-// @Accept  json
-// @Produce  json
-// @Param id query string false "search list transactions by terminal ID"
-// @Success 200 {object} ebs_fields.GenericEBSResponseFields
-// @Failure 400 {object} http.StatusBadRequest
-// @Failure 404 {object} http.StatusNotFound
-// @Failure 500 {object} http.InternalServerError
-// @Router /dashboard/count [get]
-func TransactionsCount(c *gin.Context) {
+type Service struct {
+	Redis *redis.Client
+}
+
+func (s *Service) MerchantViews(c *gin.Context) {
+	db, _ := utils.Database("sqlite3", "test.db")
+	terminal := c.Param("id")
+
+	pageSize := 50
+	page := c.DefaultQuery("page", "0")
+	p, _ := strconv.Atoi(page)
+	offset := p*pageSize - pageSize
+
+	var tran []Transaction
+	db.Table("transactions").Where("id >= ? and terminal_id LIKE ? and approval_code != ?", offset, "%"+terminal+"%", "").Order("id desc").Limit(pageSize).Find(&tran)
+	// get complaints
+
+	com, _ := s.Redis.LRange("complaints", 0, -1).Result()
+
+	var mC []merchantsIssues
+	var m merchantsIssues
+
+	for _, iss := range com {
+		json.Unmarshal([]byte(iss), &m)
+		mC = append(mC, m)
+	}
+
+	c.HTML(http.StatusOK, "merchants.html", gin.H{"tran": tran, "issues": mC})
+
+	//TODO get merchant profile
+
+}
+
+func (s *Service) TransactionsCount(c *gin.Context) {
 
 	db, err := gorm.Open("sqlite3", "test.db")
 	if err != nil {
@@ -65,18 +89,7 @@ func TransactionsCount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"result": count})
 }
 
-// TransactionByTid godoc
-// @Summary Get all transactions made by a specific terminal ID
-// @Description get accounts
-// @Accept  json
-// @Produce  json
-// @Param id query string false "search list transactions by terminal ID"
-// @Success 200 {object} ebs_fields.GenericEBSResponseFields
-// @Failure 400 {object} http.StatusBadRequest
-// @Failure 404 {object} http.StatusNotFound
-// @Failure 500 {object} http.InternalServerError
-// @Router /dashboard/get_tid [get]
-func TransactionByTid(c *gin.Context) {
+func (s *Service) TransactionByTid(c *gin.Context) {
 
 	db, err := gorm.Open("sqlite3", "test.db")
 	if err != nil {
@@ -111,7 +124,7 @@ func TransactionByTid(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"result": tran, "count": len(tran)})
 }
 
-func MakeDummyTransaction(c *gin.Context) {
+func (s *Service) MakeDummyTransaction(c *gin.Context) {
 
 	db, _ := gorm.Open("sqlite3", "test.db")
 
@@ -149,7 +162,7 @@ func MakeDummyTransaction(c *gin.Context) {
 			ReferenceNumber:        "",
 			ApprovalCode:           "",
 			VoucherNumber:          0,
-			MiniStatementRecords:   "",
+			MiniStatementRecords:   nil,
 			DisputeRRN:             "",
 			AdditionalData:         "",
 			TranDateTime:           "",
@@ -165,47 +178,41 @@ func MakeDummyTransaction(c *gin.Context) {
 	}
 }
 
-func GetAll(c *gin.Context) {
+func (s *Service) GetAll(c *gin.Context) {
 	db, _ := gorm.Open("sqlite3", "test.db")
 
 	defer db.Close()
 
 	db.AutoMigrate(&Transaction{})
 
-	var page int
-	if q := c.Query("page"); q != "" {
-		page, _ = strconv.Atoi(q)
-	} else {
-		page = 1
+	p := c.DefaultQuery("page", "0")
+	size := c.DefaultQuery("size", "50")
+	perPage := c.DefaultQuery("perPage", "")
+
+	search := c.DefaultQuery("search", "")
+	searchField := c.DefaultQuery("field", "")
+	sortField := c.DefaultQuery("sort_field", "id")
+	sortCase := c.DefaultQuery("order", "")
+
+	if perPage != "" {
+		size = perPage
 	}
+	pageSize, _ := strconv.Atoi(size)
+	page, _ := strconv.Atoi(p)
 
-	// page represents a 30 result from the database.
-	// the computation should be done like this:
-	// offset = page * 50
-	// limit = offset + 50
-
-	//todo make a pagination function
-	pageSize := 50
-	offset := page*pageSize - pageSize
-
-	fmt.Println(offset)
-	var tran []Transaction
-
-	// another good alternative
-	db.Table("transactions").Where("id >= ?", offset).Limit(pageSize).Find(&tran)
-
-	// check whether we are accessing it from a browser
-	previous := page - 1
-	next := page + 1
+	offset := page*(pageSize+1) - pageSize
+	fmt.Printf("%+v,%+v,%+v,%+v,%+v,%+v\n", searchField, search, sortField, sortCase, offset, pageSize)
+	tran, count := sortTable(db, searchField, search, sortField, sortCase, offset, pageSize)
 
 	paging := map[string]interface{}{
-		"previous": previous,
-		"after":    next,
+		"previous": page - 1,
+		"after":    page + 1,
+		"count":    count,
 	}
 	c.JSON(http.StatusOK, gin.H{"result": tran, "paging": paging})
 }
 
-func BrowserDashboard(c *gin.Context) {
+func (s *Service) BrowserDashboard(c *gin.Context) {
 	db, _ := gorm.Open("sqlite3", "test.db")
 
 	defer db.Close()
@@ -213,16 +220,14 @@ func BrowserDashboard(c *gin.Context) {
 	db.AutoMigrate(&Transaction{})
 
 	var page int
-	if q := c.Query("page"); q != "" {
-		page, _ = strconv.Atoi(q)
-	} else {
-		page = 1
-	}
 
-	//todo make a pagination function
+	q := c.DefaultQuery("page", "1")
+	page, _ = strconv.Atoi(q)
+
+	//todo make a pagination funct(s *Service)ion
 	pageSize := 50
 	offset := page*pageSize - pageSize
-
+	log.Printf("The offset is: %v", offset)
 	var tran []Transaction
 
 	var count int
@@ -240,7 +245,7 @@ func BrowserDashboard(c *gin.Context) {
 	if c.ShouldBind(&search) == nil {
 		db.Table("transactions").Where("id >= ? and terminal_id LIKE ?", offset, "%"+search.TerminalID+"%").Order("id desc").Limit(pageSize).Find(&tran)
 	} else {
-		db.Table("transactions").Where("id >= ?", offset).Order("id desc").Limit(pageSize).Find(&tran)
+		db.Table("transactions").Where("id >= ?", offset).Limit(pageSize).Find(&tran)
 	}
 
 	// get the most transactions per terminal_id
@@ -253,6 +258,7 @@ func BrowserDashboard(c *gin.Context) {
 	db.Table("transactions").Select("count(tran_fee) as amount, response_status, terminal_id, datetime(created_at) as time").Where("tran_amount >= ? AND response_status = ? AND strftime('%m', time) = ?", 1, "Successful", m).Group("terminal_id").Order("amount desc").Scan(&terminalFees)
 
 	log.Printf("the least merchats are: %v", leastMerchants)
+
 	pager := pagination(count, 50)
 	errors := errorsCounter(tran)
 	stats := map[string]int{
@@ -263,19 +269,19 @@ func BrowserDashboard(c *gin.Context) {
 
 	sumFees := computeSum(terminalFees)
 	c.HTML(http.StatusOK, "table.html", gin.H{"transactions": tran, "count": pager + 1,
-		"stats": stats, "amounts": totAmount, "merchant_stats": mStats, "least_merchants": leastMerchants, "terminal_fees": terminalFees, "sum_fees": sumFees})
+		"stats": stats, "amounts": totAmount, "merchant_stats": mStats, "least_merchants": leastMerchants,
+		"terminal_fees": terminalFees, "sum_fees": sumFees})
 }
 
-func LandingPage(c *gin.Context) {
+func (s *Service) LandingPage(c *gin.Context) {
 	showForm := true
 	if c.Request.Method == "POST" {
 		var f form
 		err := c.ShouldBind(&f)
 		if err == nil {
 			ua := c.GetHeader("User-Agent")
-			redisClient := utils.GetRedis()
-			redisClient.LPush("voices", &f)
-			redisClient.LPush("voices:ua", ua)
+			s.Redis.LPush("voices", &f)
+			s.Redis.LPush("voices:ua", ua)
 			showForm = false
 		}
 	}
@@ -283,14 +289,13 @@ func LandingPage(c *gin.Context) {
 	c.HTML(http.StatusOK, "landing.html", gin.H{"showform": showForm})
 }
 
-func MerchantPage(c *gin.Context) {
+func (s *Service) MerchantRegistration(c *gin.Context) {
 	var f ebs_fields.Merchant
 	if c.Request.Method == "POST" {
 		err := c.ShouldBind(&f)
 		if err == nil {
-			redisClient := utils.GetRedis()
-			redisClient.SAdd("merchants:all", f.MerchantName)
-			redisClient.HMSet("merchant:"+f.MerchantName, f.ToMap())
+			s.Redis.SAdd("merchants:all", f.MerchantName)
+			s.Redis.HMSet("merchant:"+f.MerchantName, f.ToMap())
 			c.HTML(http.StatusOK, "landing.html", gin.H{"showform": false})
 		} else {
 			er, _ := c.Errors.MarshalJSON()
@@ -302,11 +307,11 @@ func MerchantPage(c *gin.Context) {
 	}
 }
 
-func IndexPage(c *gin.Context) {
+func (s *Service) IndexPage(c *gin.Context) {
 	c.HTML(http.StatusOK, "index.html", nil)
 }
 
-func Stream(c *gin.Context) {
+func (s *Service) Stream(c *gin.Context) {
 	var trans []Transaction
 	var stream bytes.Buffer
 
@@ -330,7 +335,7 @@ type purchasesSum map[string]interface{}
 // This endpoint is highly experimental. It has many security issues and it is only
 // used by us for testing and prototyping only. YOU HAVE TO USE PROPER AUTHENTICATION system
 // if you decide to go with it. See apigateway package if you are interested.
-func DailySettlement(c *gin.Context) {
+func (s *Service) DailySettlement(c *gin.Context) {
 	// get the results from DB
 	db, _ := gorm.Open("sqlite3", "test.db")
 	defer db.Close()
@@ -366,7 +371,7 @@ func DailySettlement(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"transactions": listP, "sum": sum, "count": count})
 }
 
-func MerchantTransactionsEndpoint(c *gin.Context) {
+func (s *Service) MerchantTransactionsEndpoint(c *gin.Context) {
 	tid := c.Query("terminal")
 	if tid == "" {
 		// the user didn't sent any id
@@ -374,16 +379,16 @@ func MerchantTransactionsEndpoint(c *gin.Context) {
 			"code": "terminal_id_not_present_in_request"})
 		return
 	}
-	redisClient := utils.GetRedis()
-	v, err := redisClient.LRange(tid+":purchase", 0, -1).Result()
+
+	v, err := s.Redis.LRange(tid+":purchase", 0, -1).Result()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"result": MerchantTransactions{}})
 		return
 	}
 	sum := purchaseSum(v)
-	failedTransactions, _ := redisClient.Get(tid + ":failed_transactions").Result()
-	successfulTransactions, _ := redisClient.Get(tid + ":successful_transactions").Result()
-	numberTransactions, _ := redisClient.Get(tid + ":number_purchase_transactions").Result()
+	failedTransactions, _ := s.Redis.Get(tid + ":failed_transactions").Result()
+	successfulTransactions, _ := s.Redis.Get(tid + ":successful_transactions").Result()
+	numberTransactions, _ := s.Redis.Get(tid + ":number_purchase_transactions").Result()
 	failed, _ := strconv.Atoi(failedTransactions)
 	succ, _ := strconv.Atoi(successfulTransactions)
 	num, _ := strconv.Atoi(numberTransactions)
@@ -393,14 +398,13 @@ func MerchantTransactionsEndpoint(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"result": p})
 }
 
-func ReportIssueEndpoint(c *gin.Context) {
+func (s *Service) ReportIssueEndpoint(c *gin.Context) {
 	var issue merchantsIssues
 	if err := c.ShouldBindJSON(&issue); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "terminalId_not_provided", "message": "Pls provide terminal Id"})
 	} else {
-		redisClient := utils.GetRedis()
-		redisClient.LPush("complaints", &issue)
-		redisClient.LPush(issue.TerminalID+":complaints", &issue)
+		s.Redis.LPush("complaints", &issue)
+		s.Redis.LPush(issue.TerminalID+":complaints", &issue)
 		c.JSON(http.StatusOK, gin.H{"result": "ok"})
 	}
 }

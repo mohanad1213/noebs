@@ -1,14 +1,15 @@
 package gateway
 
 import (
+	"strings"
+
 	"github.com/jinzhu/gorm"
 	"golang.org/x/crypto/bcrypt"
-	"strings"
 )
 
 type UserModel struct {
 	gorm.Model
-	Username  string `binding:"required,min=3" json:"username" gorm:"unique_index"`
+	Username  string `binding:"min=3" json:"username"`
 	Password  string `binding:"required,min=8,max=20" json:"password"`
 	jwt       JWT
 	jwtId     int
@@ -21,7 +22,7 @@ type UserModel struct {
 	Card []Cards
 }
 
-func (u *UserModel) sanitizeName() {
+func (u *UserModel) SanitizeName() {
 	u.Username = strings.ToLower(u.Username)
 }
 
@@ -30,7 +31,7 @@ type UserLogin struct {
 	Password string `binding:"required" json:"password"`
 }
 
-func (u *UserModel) hashPassword() error {
+func (u *UserModel) HashPassword() error {
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(u.Password), 8)
 	if err != nil {
 		return err
